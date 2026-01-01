@@ -11,12 +11,9 @@ from typing import Callable
 from config import CRAWL_STATUS_FILE, DEMO_CARD_LIMIT, FEATURE_STORE_DIR, LOGS_DIR, RAW_DATA_DIR, RESUME_RECORD_LIMIT
 from crawl_status import CrawlStatus
 from normalizers.card_normalizer import CardNormalizer
-from scrapers.pokemon_tcg_scraper import PokemonTCGScraper
 from scrapers.pricecharting_scraper import PriceChartingScraper
-from scrapers.psa_scraper import PSAScraper
-from scrapers.pokellector_scraper import PokellectorScraper
-from scrapers.pkmncards_scraper import PKMNCardsScraper
-from scrapers.tcgfish_scraper import SoldPricesScraper
+
+__version__ = "0.1.0"
 
 
 @dataclass
@@ -301,6 +298,7 @@ Examples:
   uv run python main.py --resume     # Resume from last crawl, skip already-fetched records
         """,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--limit",
         type=int,
