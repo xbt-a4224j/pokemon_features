@@ -3,6 +3,7 @@
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -10,37 +11,64 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
+    CRAWL_STATUS_FILE,
     DataSource,
     HEADERS,
     MAX_RETRIES,
     RAW_DATA_DIR,
     REQUEST_TIMEOUT,
 )
+from crawl_status import CrawlStatus
 
 logger = logging.getLogger(__name__)
 
-# Set URLs on Pokellector
+# Set URLs on Pokellector (classic WotC + early ex era)
 DEFAULT_SETS = [
+    # Base era
     ("Base-Set-Expansion", "Base Set"),
     ("Jungle-Expansion", "Jungle"),
     ("Fossil-Expansion", "Fossil"),
     ("Base-Set-2-Expansion", "Base Set 2"),
     ("Team-Rocket-Expansion", "Team Rocket"),
+    # Gym era
+    ("Gym-Heroes-Expansion", "Gym Heroes"),
+    ("Gym-Challenge-Expansion", "Gym Challenge"),
+    # Neo era
+    ("Neo-Genesis-Expansion", "Neo Genesis"),
+    ("Neo-Discovery-Expansion", "Neo Discovery"),
+    ("Neo-Revelation-Expansion", "Neo Revelation"),
+    ("Neo-Destiny-Expansion", "Neo Destiny"),
+    # Legendary/e-Card era
+    ("Legendary-Collection-Expansion", "Legendary Collection"),
+    ("Expedition-Base-Set-Expansion", "Expedition"),
+    ("Aquapolis-Expansion", "Aquapolis"),
+    ("Skyridge-Expansion", "Skyridge"),
+    # Early EX era
+    ("EX-Ruby-Sapphire-Expansion", "EX Ruby & Sapphire"),
+    ("EX-Sandstorm-Expansion", "EX Sandstorm"),
+    ("EX-Dragon-Expansion", "EX Dragon"),
+    ("EX-Team-Magma-vs-Team-Aqua-Expansion", "EX Team Magma vs Team Aqua"),
+    ("EX-Hidden-Legends-Expansion", "EX Hidden Legends"),
+    ("EX-FireRed-LeafGreen-Expansion", "EX FireRed & LeafGreen"),
 ]
 
 
 class PokellectorScraper:
     """Scraper for Pokellector card database."""
 
-    def __init__(self, sets: list[tuple[str, str]] | None = None, limit_per_set: int = 50):
+    SCRAPER_NAME = "pokellector"
+
+    def __init__(self, sets: list[tuple[str, str]] | None = None, limit_per_set: int = 50, crawl_status: CrawlStatus | None = None):
         self.sets = sets or DEFAULT_SETS
         self.limit_per_set = limit_per_set
         self.base_url = "https://www.pokellector.com"
         self.source = DataSource.POKEMON_TCG_API  # Metadata source
+        self.crawl_status = crawl_status
         self.delay = 0.5  # Be polite
 
     def _fetch_page(self, url: str) -> BeautifulSoup | None:
@@ -121,12 +149,30 @@ class PokellectorScraper:
         logger.info(f"Starting Pokellector scrape ({len(self.sets)} sets)")
 
         all_cards = []
+        sets_skipped = 0
 
         for set_slug, set_name in tqdm(self.sets, desc="Scraping Pokellector"):
+            # Skip already-completed sets
+            if self.crawl_status and self.crawl_status.is_set_completed(self.SCRAPER_NAME, set_slug):
+                sets_skipped += 1
+                logger.debug(f"Skipping already-scraped set: {set_name}")
+                continue
+
             cards = self._scrape_set(set_slug, set_name)
             all_cards.extend(cards)
+
+            # Mark set as completed
+            if self.crawl_status and cards:
+                self.crawl_status.update(
+                    self.SCRAPER_NAME,
+                    completed_set=set_slug,
+                    records_added=len(cards),
+                )
+
             time.sleep(self.delay)
 
+        if sets_skipped > 0:
+            logger.info(f"Skipped {sets_skipped} previously scraped sets")
         logger.info(f"Scraped {len(all_cards)} cards from Pokellector")
         return pd.DataFrame(all_cards)
 

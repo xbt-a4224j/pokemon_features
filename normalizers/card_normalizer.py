@@ -1,12 +1,14 @@
 """Normalizer for Pokemon card data into feature store format."""
 
 import logging
-from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+# Add parent to path for imports when run as script
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import NORMALIZED_DIR, RAW_DATA_DIR
 
@@ -111,10 +113,12 @@ class CardNormalizer:
 
     def _create_card_key(self, df: pd.DataFrame, name_col: str, set_col: str, num_col: str) -> pd.Series:
         """Create a canonical card key for matching across sources."""
+        # Normalize card_number: remove trailing .0 (e.g., "4.0" -> "4")
+        card_num = df[num_col].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
         return (
             df[name_col].str.lower().str.strip() + "|" +
             df[set_col].str.lower().str.strip() + "|" +
-            df[num_col].astype(str).str.strip()
+            card_num
         )
 
     def _load_and_merge_all_sources(self) -> pd.DataFrame:
@@ -132,27 +136,49 @@ class CardNormalizer:
         # Source 2: PriceCharting (prices)
         pc = self.load_raw_data("pricecharting_cards.csv")
         if pc is not None:
-            pc["_key"] = self._create_card_key(pc, "card_name", "set_name", "card_number")
+            pc_adapted = self._adapt_pricecharting(pc)
+            pc_adapted["_key"] = self._create_card_key(pc_adapted, "card_name", "set_name", "card_number")
             if merged is None:
-                merged = self._adapt_pricecharting(pc)
-                merged["_key"] = self._create_card_key(merged, "card_name", "set_name", "card_number")
+                merged = pc_adapted
             else:
-                # Merge pricing columns (check for column existence)
-                price_cols = ["_key"]
-                col_renames = {}
-                for col, new_name in [
-                    ("price_ungraded", "pc_price_ungraded"),
-                    ("price_graded", "pc_price_graded"),
-                    ("price_sealed", "pc_price_complete"),
-                    ("is_first_edition", "pc_first_edition"),
-                    ("is_shadowless", "pc_shadowless"),
-                ]:
-                    if col in pc.columns:
-                        price_cols.append(col)
-                        col_renames[col] = new_name
-                pc_cols = pc[price_cols].copy()
-                pc_cols = pc_cols.rename(columns=col_renames)
-                merged = merged.merge(pc_cols, on="_key", how="outer")
+                # Find keys only in PriceCharting (not in merged)
+                existing_keys = set(merged["_key"])
+                pc_only = pc_adapted[~pc_adapted["_key"].isin(existing_keys)]
+
+                # Add new cards from PriceCharting (they already have all price columns)
+                if len(pc_only) > 0:
+                    merged = pd.concat([merged, pc_only], ignore_index=True)
+                    logger.info(f"Added {len(pc_only)} new cards from PriceCharting")
+
+                # For overlapping cards (in both TCG and PC), add price columns
+                # Only update rows that don't already have pc_price_ungraded
+                pc["_key"] = self._create_card_key(pc, "card_name", "set_name", "card_number")
+                overlapping_keys = existing_keys & set(pc["_key"])
+                if overlapping_keys:
+                    price_cols = ["_key"]
+                    col_renames = {}
+                    for col, new_name in [
+                        ("price_ungraded", "pc_price_ungraded"),
+                        ("price_graded", "pc_price_graded"),
+                        ("price_sealed", "pc_price_complete"),
+                        ("is_first_edition", "pc_first_edition"),
+                        ("is_shadowless", "pc_shadowless"),
+                    ]:
+                        if col in pc.columns:
+                            price_cols.append(col)
+                            col_renames[col] = new_name
+                    pc_cols = pc[pc["_key"].isin(overlapping_keys)][price_cols].copy()
+                    pc_cols = pc_cols.rename(columns=col_renames)
+                    # Drop duplicates (take first, usually highest value variant)
+                    pc_cols = pc_cols.drop_duplicates(subset=["_key"], keep="first")
+                    # Merge only for rows without existing pc prices
+                    merged = merged.merge(pc_cols, on="_key", how="left", suffixes=("", "_new"))
+                    # Coalesce: use existing value if present, else new value
+                    for col in ["pc_price_ungraded", "pc_price_graded", "pc_price_complete", "pc_first_edition", "pc_shadowless"]:
+                        if f"{col}_new" in merged.columns:
+                            merged[col] = merged[col].fillna(merged[f"{col}_new"])
+                            merged = merged.drop(columns=[f"{col}_new"])
+                    logger.info(f"Added prices for {len(overlapping_keys)} overlapping cards")
             logger.info(f"Loaded PriceCharting: {len(pc)} records")
 
         # Source 3: Pokellector (images)

@@ -8,6 +8,7 @@ Consider caching results and only scraping high-value cards.
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -15,10 +16,12 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
+    CRAWL_STATUS_FILE,
     DataSource,
     HEADERS,
     MAX_RETRIES,
@@ -27,6 +30,7 @@ from config import (
     RAW_DATA_DIR,
     REQUEST_TIMEOUT,
 )
+from crawl_status import CrawlStatus
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +52,13 @@ DEFAULT_CARDS = [
 class PSAScraper:
     """Scraper for PSA Population Report data."""
 
-    def __init__(self, cards: list[str] | None = None):
+    SCRAPER_NAME = "psa"
+
+    def __init__(self, cards: list[str] | None = None, crawl_status: CrawlStatus | None = None):
         self.cards = cards or DEFAULT_CARDS
         self.base_url = PSA_BASE
         self.source = DataSource.PSA
+        self.crawl_status = crawl_status
         self.session = requests.Session()
         self.session.headers.update({
             **HEADERS,
@@ -165,14 +172,31 @@ class PSAScraper:
         logger.info(f"Starting PSA population scrape ({len(self.cards)} cards)")
 
         all_results = []
+        cards_skipped = 0
 
         for card in tqdm(self.cards, desc="Searching PSA"):
+            # Skip already-searched cards (using card query as ID)
+            if self.crawl_status and self.crawl_status.is_id_scraped(self.SCRAPER_NAME, card):
+                cards_skipped += 1
+                logger.debug(f"Skipping already-searched card: {card}")
+                continue
+
             results = self._search_card(card)
             all_results.extend(results)
+
+            # Mark card as searched
+            if self.crawl_status:
+                self.crawl_status.update(
+                    self.SCRAPER_NAME,
+                    scraped_ids=[card],
+                    records_added=len(results),
+                )
 
             # Very conservative rate limiting - PSA blocks aggressively
             time.sleep(PSA_DELAY)
 
+        if cards_skipped > 0:
+            logger.info(f"Skipped {cards_skipped} previously searched cards")
         logger.info(f"Found {len(all_results)} PSA population records")
         return pd.DataFrame(all_results)
 

@@ -2,16 +2,19 @@
 
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
+    CRAWL_STATUS_FILE,
     DEMO_CARD_LIMIT,
     DataSource,
     HEADERS,
@@ -22,6 +25,7 @@ from config import (
     RAW_DATA_DIR,
     REQUEST_TIMEOUT,
 )
+from crawl_status import CrawlStatus
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +33,14 @@ logger = logging.getLogger(__name__)
 class PokemonTCGScraper:
     """Scraper for Pokemon TCG API."""
 
-    def __init__(self, limit: int = DEMO_CARD_LIMIT):
+    SCRAPER_NAME = "pokemon_tcg"
+
+    def __init__(self, limit: int = DEMO_CARD_LIMIT, crawl_status: CrawlStatus | None = None):
         self.limit = limit
         self.base_url = f"{POKEMON_API_BASE}/cards"
         self.source = DataSource.POKEMON_TCG_API
         self.headers = {**HEADERS}
+        self.crawl_status = crawl_status
         if POKEMON_TCG_API_KEY:
             self.headers["X-Api-Key"] = POKEMON_TCG_API_KEY
 
@@ -107,8 +114,18 @@ class PokemonTCGScraper:
         logger.info(f"Starting Pokemon TCG API scrape (limit: {self.limit})")
 
         cards = []
-        page = 1
         page_size = min(50, self.limit)
+        skipped = 0
+        new_card_ids = []
+
+        # Resume from last page if we have crawl status
+        start_page = 1
+        if self.crawl_status:
+            start_page = max(1, self.crawl_status.get_resume_page(self.SCRAPER_NAME))
+            if start_page > 1:
+                logger.info(f"Resuming from page {start_page}")
+
+        page = start_page
 
         with tqdm(total=self.limit, desc="Fetching cards") as pbar:
             while len(cards) < self.limit:
@@ -120,9 +137,28 @@ class PokemonTCGScraper:
                 for card in data["data"]:
                     if len(cards) >= self.limit:
                         break
+
+                    card_id = card.get("id")
+
+                    # Skip already-scraped cards
+                    if self.crawl_status and card_id and self.crawl_status.is_id_scraped(self.SCRAPER_NAME, card_id):
+                        skipped += 1
+                        continue
+
                     parsed = self._parse_card(card)
                     cards.append(parsed)
+                    if card_id:
+                        new_card_ids.append(card_id)
                     pbar.update(1)
+
+                # Update crawl status after each page
+                if self.crawl_status:
+                    self.crawl_status.update(
+                        self.SCRAPER_NAME,
+                        last_page=page,
+                        scraped_ids=new_card_ids,
+                    )
+                    new_card_ids = []
 
                 # Check if we've reached the end
                 total_count = data.get("totalCount", 0)
@@ -132,7 +168,17 @@ class PokemonTCGScraper:
                 page += 1
                 time.sleep(POKEMON_API_DELAY)
 
-        logger.info(f"Scraped {len(cards)} cards from Pokemon TCG API")
+        # Final status update
+        if self.crawl_status and cards:
+            self.crawl_status.update(
+                self.SCRAPER_NAME,
+                records_added=len(cards),
+                last_record_id=cards[-1].get("id") if cards else None,
+            )
+
+        if skipped > 0:
+            logger.info(f"Skipped {skipped} previously scraped cards")
+        logger.info(f"Scraped {len(cards)} new cards from Pokemon TCG API")
         return pd.DataFrame(cards)
 
     def save(self, df: pd.DataFrame) -> str:

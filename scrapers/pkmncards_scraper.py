@@ -3,6 +3,7 @@
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -10,34 +11,62 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
+    CRAWL_STATUS_FILE,
     HEADERS,
     MAX_RETRIES,
     RAW_DATA_DIR,
     REQUEST_TIMEOUT,
 )
+from crawl_status import CrawlStatus
 
 logger = logging.getLogger(__name__)
 
+# Classic Pokemon TCG sets (WotC + early ex era)
 DEFAULT_SETS = [
+    # Base era
     ("base-set", "Base Set"),
     ("jungle", "Jungle"),
     ("fossil", "Fossil"),
     ("base-set-2", "Base Set 2"),
     ("team-rocket", "Team Rocket"),
+    # Gym era
+    ("gym-heroes", "Gym Heroes"),
+    ("gym-challenge", "Gym Challenge"),
+    # Neo era
+    ("neo-genesis", "Neo Genesis"),
+    ("neo-discovery", "Neo Discovery"),
+    ("neo-revelation", "Neo Revelation"),
+    ("neo-destiny", "Neo Destiny"),
+    # Legendary/e-Card era
+    ("legendary-collection", "Legendary Collection"),
+    ("expedition-base-set", "Expedition"),
+    ("aquapolis", "Aquapolis"),
+    ("skyridge", "Skyridge"),
+    # Early EX era
+    ("ex-ruby-sapphire", "EX Ruby & Sapphire"),
+    ("ex-sandstorm", "EX Sandstorm"),
+    ("ex-dragon", "EX Dragon"),
+    ("ex-team-magma-vs-team-aqua", "EX Team Magma vs Team Aqua"),
+    ("ex-hidden-legends", "EX Hidden Legends"),
+    ("ex-firered-leafgreen", "EX FireRed & LeafGreen"),
 ]
 
 
 class PKMNCardsScraper:
     """Scraper for PKMNCards card database with high-quality images."""
 
-    def __init__(self, sets: list[tuple[str, str]] | None = None, limit_per_set: int = 50):
+    SCRAPER_NAME = "pkmncards"
+
+    def __init__(self, sets: list[tuple[str, str]] | None = None, limit_per_set: int = 50, crawl_status: CrawlStatus | None = None):
         self.sets = sets or DEFAULT_SETS
         self.limit_per_set = limit_per_set
         self.base_url = "https://pkmncards.com"
+        self.crawl_status = crawl_status
         self.delay = 0.5
 
     def _fetch_page(self, url: str) -> BeautifulSoup | None:
@@ -112,12 +141,30 @@ class PKMNCardsScraper:
         logger.info(f"Starting PKMNCards scrape ({len(self.sets)} sets)")
 
         all_cards = []
+        sets_skipped = 0
 
         for set_slug, set_name in tqdm(self.sets, desc="Scraping PKMNCards"):
+            # Skip already-completed sets
+            if self.crawl_status and self.crawl_status.is_set_completed(self.SCRAPER_NAME, set_slug):
+                sets_skipped += 1
+                logger.debug(f"Skipping already-scraped set: {set_name}")
+                continue
+
             cards = self._scrape_set(set_slug, set_name)
             all_cards.extend(cards)
+
+            # Mark set as completed
+            if self.crawl_status and cards:
+                self.crawl_status.update(
+                    self.SCRAPER_NAME,
+                    completed_set=set_slug,
+                    records_added=len(cards),
+                )
+
             time.sleep(self.delay)
 
+        if sets_skipped > 0:
+            logger.info(f"Skipped {sets_skipped} previously scraped sets")
         logger.info(f"Scraped {len(all_cards)} cards from PKMNCards")
         return pd.DataFrame(all_cards)
 

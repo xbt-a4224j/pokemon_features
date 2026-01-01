@@ -23,6 +23,7 @@ RAW_DATA_DIR = OUTPUT_DIR / "raw_data"
 NORMALIZED_DIR = OUTPUT_DIR / "normalized"
 FEATURE_STORE_DIR = OUTPUT_DIR / "feature_store"
 LOGS_DIR = BASE_DIR / "logs"
+CRAWL_STATUS_FILE = BASE_DIR / ".crawl_status.json"
 
 # Create directories
 for dir_path in [RAW_DATA_DIR, NORMALIZED_DIR, FEATURE_STORE_DIR, LOGS_DIR]:
@@ -35,13 +36,14 @@ PSA_BASE = "https://www.psacard.com"
 
 # Rate limiting (seconds between requests)
 POKEMON_API_DELAY = 0.1  # 10 req/sec
-PRICECHARTING_DELAY = 0.5  # 2 req/sec
-PSA_DELAY = 4.0  # 1 req/4 sec (very conservative)
+PRICECHARTING_DELAY = 0.3  # ~3 req/sec
+PSA_DELAY = 1.0  # 1 req/sec (was 4.0 - too slow for resume runs)
 
 # Demo limits
 DEMO_CARD_LIMIT = 100
-MAX_RETRIES = 3
-REQUEST_TIMEOUT = 30  # Increased for flaky connections
+RESUME_RECORD_LIMIT = 50  # Stop resume mode after this many new records (target: <2 min)
+MAX_RETRIES = 2  # Reduced from 3 to fail faster
+REQUEST_TIMEOUT = 10  # Reduced from 30 for faster failure detection
 
 # API Keys
 POKEMON_TCG_API_KEY = os.getenv("POKEMON_TCG_API_KEY")

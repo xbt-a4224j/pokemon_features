@@ -7,6 +7,7 @@ actual market prices from completed transactions.
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -15,15 +16,18 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import (
+    CRAWL_STATUS_FILE,
     HEADERS,
     MAX_RETRIES,
     RAW_DATA_DIR,
     REQUEST_TIMEOUT,
 )
+from crawl_status import CrawlStatus
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +54,14 @@ DEFAULT_SEARCHES = [
 class SoldPricesScraper:
     """Scraper for completed/sold Pokemon card listings."""
 
-    def __init__(self, searches: list[tuple[str, str, str]] | None = None):
+    SCRAPER_NAME = "sold_prices"
+
+    def __init__(self, searches: list[tuple[str, str, str]] | None = None, crawl_status: CrawlStatus | None = None):
         self.searches = searches or DEFAULT_SEARCHES
-        self.delay = 1.0  # Be respectful
+        self.crawl_status = crawl_status
+        self.delay = 0.3  # Reduced from 1.0 for faster resume runs
+        self.start_time = None
+        self.time_budget = 30  # Max seconds for this scraper in resume mode
 
     def _fetch_page(self, url: str) -> BeautifulSoup | None:
         """Fetch and parse a page."""
@@ -168,8 +177,15 @@ class SoldPricesScraper:
         logger.info(f"Starting sold prices scrape ({len(self.searches)} searches)")
 
         all_results = []
+        searches_skipped = 0
 
         for query, card_name, set_name in tqdm(self.searches, desc="Searching sold prices"):
+            # Skip already-searched queries
+            if self.crawl_status and self.crawl_status.is_id_scraped(self.SCRAPER_NAME, query):
+                searches_skipped += 1
+                logger.debug(f"Skipping already-searched: {query}")
+                continue
+
             # Try Mavin first (better for sold prices)
             results = self._search_mavin(query, card_name, set_name)
 
@@ -178,8 +194,19 @@ class SoldPricesScraper:
                 results = self._search_collectr(query, card_name, set_name)
 
             all_results.extend(results)
+
+            # Mark search as completed
+            if self.crawl_status:
+                self.crawl_status.update(
+                    self.SCRAPER_NAME,
+                    scraped_ids=[query],
+                    records_added=len(results),
+                )
+
             time.sleep(self.delay)
 
+        if searches_skipped > 0:
+            logger.info(f"Skipped {searches_skipped} previously searched queries")
         logger.info(f"Found {len(all_results)} sold price records")
         return pd.DataFrame(all_results)
 
