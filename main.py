@@ -13,7 +13,7 @@ from crawl_status import CrawlStatus
 from normalizers.card_normalizer import CardNormalizer
 from scrapers.pricecharting_scraper import PriceChartingScraper
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 @dataclass
